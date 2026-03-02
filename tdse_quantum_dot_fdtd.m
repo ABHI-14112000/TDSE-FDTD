@@ -1,115 +1,150 @@
-% TDSE for a 1D quantum dot using an FDTD-style finite-difference grid in MATLAB
-% Method: Crank-Nicolson time stepping (unconditionally stable)
+% TDSE for a 1D quantum dot using an explicit FDTD leapfrog scheme in MATLAB
+% -----------------------------------------------------------------------
+% Equation: i*hbar*dpsi/dt = -(hbar^2/2m)*d2psi/dx2 + V(x)*psi
 %
-% You can run this file directly in MATLAB.
+% FDTD form (real/imag split):
+%   psi = psiR + i*psiI
+%   dpsiR/dt = -(1/hbar) * [-(hbar^2/2m)*d2(psiI)/dx2 + V*psiI]
+%   dpsiI/dt = +(1/hbar) * [-(hbar^2/2m)*d2(psiR)/dx2 + V*psiR]
+%
+% Time staggering:
+%   psiR at n*dt, psiI at (n+1/2)*dt (leapfrog)
+%
+% This script is intentionally self-contained and easy to modify.
 
 clear; clc; close all;
 
 %% Physical constants (SI)
 hbar = 1.054571817e-34;      % J*s
 m0   = 9.1093837015e-31;     % kg
-q    = 1.602176634e-19;      % C (J/eV conversion)
+q    = 1.602176634e-19;      % J/eV
 
-%% Simulation setup
-m_eff = 0.067 * m0;          % Effective mass (GaAs-like)
-L     = 80e-9;               % Domain length (80 nm)
-Nx    = 800;                 % Number of spatial points
-x     = linspace(-L/2, L/2, Nx).';
-dx    = x(2)-x(1);
+%% Material and domain
+mEff = 0.067*m0;             % GaAs-like effective mass
+L    = 120e-9;               % Domain length (m)
+Nx   = 1200;                 % Number of grid points
+x    = linspace(-L/2, L/2, Nx).';
+dx   = x(2) - x(1);
 
-dt      = 1e-17;             % Time step (s)
-Nt      = 5000;              % Number of time steps
-nPlot   = 50;                % Plot every nPlot steps
+%% Time step (explicit stability guidance)
+% Practical choice: keep dt comfortably below the kinetic scale hbar/(2*alpha)
+% where alpha = hbar^2/(2m*dx^2). Use a safety factor < 1.
+alpha       = hbar^2/(2*mEff*dx^2);
+dtStability = hbar/(2*alpha);
+safety      = 0.20;
+dt          = safety*dtStability;
+Nt          = 12000;
+plotEvery   = 120;
 
-%% Quantum dot potential (finite well)
-% Dot width and barrier height
-wellWidth = 20e-9;           % 20 nm
-V0_eV     = 0.30;            % 0.30 eV barrier
-V         = V0_eV*q * ones(Nx,1);
+%% Quantum-dot potential (finite square well in a barrier)
+wellWidth = 20e-9;           % m
+V0eV      = 0.30;            % eV
+V         = V0eV*q*ones(Nx,1);
 V(abs(x) <= wellWidth/2) = 0;
 
-%% Initial wave packet (inside dot)
-x0     = -5e-9;              % Initial center (m)
-sigma  = 2e-9;               % Width (m)
-k0     = 2.0e9;              % Central wave number (1/m)
-psi    = exp(-(x-x0).^2/(2*sigma^2)) .* exp(1i*k0*x);
+%% Optional absorbing layer near boundaries (reduces reflections)
+absWidth = 15e-9;            % absorbing layer width at each edge
+etaMax   = 8e13;             % 1/s damping strength
+eta      = absorbingProfile(x, L, absWidth, etaMax);
 
-% Normalize
-psi = psi / sqrt(trapz(x, abs(psi).^2));
+%% Initial wave packet (inside/near dot)
+x0    = -6e-9;
+sigma = 2.2e-9;
+k0    = 1.7e9;
+psi0  = exp(-((x-x0).^2)/(2*sigma^2)) .* exp(1i*k0*x);
+psi0  = psi0 / sqrt(trapz(x, abs(psi0).^2));
 
-%% Build Crank-Nicolson matrices: (I + i dt/(2hbar) H) psi^{n+1} = (I - i dt/(2hbar) H) psi^n
-% Hamiltonian: H = -(hbar^2/2m) d2/dx2 + V
-alpha = hbar^2/(2*m_eff*dx^2);
+% Leapfrog state variables
+psiR = real(psi0);                                % at t = n*dt
+psiI = imag(psi0);                                % approx at t = n*dt initially
 
-diagH = 2*alpha + V;
-offH  = -alpha * ones(Nx-1,1);
+% Kick imag part by half-step to enforce staggering
+lapR = secondDerivative(psiR, dx);
+psiI = psiI + 0.5*dt*( (alpha/hbar)*lapR - (V/hbar).*psiR );
 
-% Dirichlet boundaries psi = 0 at ends
-I = speye(Nx);
-H = spdiags([offH diagH offH], -1:1, Nx, Nx);
+% Hard-wall endpoints + absorber on top
+psiR([1 end]) = 0;
+psiI([1 end]) = 0;
 
-A = I + 1i*dt/(2*hbar) * H;
-B = I - 1i*dt/(2*hbar) * H;
-
-% Enforce hard-wall boundaries directly in matrices
-A(1,:) = 0; A(1,1) = 1;
-A(end,:) = 0; A(end,end) = 1;
-B(1,:) = 0; B(1,1) = 1;
-B(end,:) = 0; B(end,end) = 1;
-psi(1) = 0; psi(end) = 0;
-
-% Pre-factorization for speed
-[Lfac, Ufac, Pfac, Qfac, Rfac] = lu(A);
-
-%% Figure setup
+%% Plot setup
 figure('Color','w');
 subplot(2,1,1);
-hProb = plot(x*1e9, abs(psi).^2, 'b', 'LineWidth', 1.5); hold on;
-hPot  = plot(x*1e9, V/(q), 'r--', 'LineWidth', 1.2);
+hProb = plot(x*1e9, psiR.^2 + psiI.^2, 'b', 'LineWidth', 1.4); hold on;
+hPot  = plot(x*1e9, V/q, 'r--', 'LineWidth', 1.1);
 ylabel('|\psi|^2 (arb.) / V (eV)');
 legend('|\psi|^2', 'V(x)', 'Location', 'best');
-grid on; xlim([min(x), max(x)]*1e9);
-title('TDSE in a quantum dot (1D finite well)');
+grid on;
 
 subplot(2,1,2);
-hRe = plot(x*1e9, real(psi), 'k', 'LineWidth', 1.2); hold on;
-hIm = plot(x*1e9, imag(psi), 'm', 'LineWidth', 1.2);
-xlabel('x (nm)'); ylabel('\psi components');
+hRe = plot(x*1e9, psiR, 'k', 'LineWidth', 1.1); hold on;
+hIm = plot(x*1e9, psiI, 'm', 'LineWidth', 1.1);
+xlabel('x (nm)');
+ylabel('\psi components');
 legend('Re(\psi)', 'Im(\psi)', 'Location', 'best');
-grid on; xlim([min(x), max(x)]*1e9);
+grid on;
 
-%% Time evolution
+%% Time stepping (explicit leapfrog FDTD)
 for n = 1:Nt
-    rhs = B * psi;
-    psi = Qfac * (Ufac \ (Lfac \ (Pfac * (Rfac \ rhs))));
+    % 1) update real part using imag part
+    lapI = secondDerivative(psiI, dx);
+    psiR = psiR - dt*( (alpha/hbar)*lapI - (V/hbar).*psiI );
 
-    % Re-enforce boundaries and renormalize
-    psi(1) = 0; psi(end) = 0;
-    psi = psi / sqrt(trapz(x, abs(psi).^2));
+    % 2) absorber damping for real part
+    psiR = psiR .* exp(-eta*dt);
 
-    if mod(n, nPlot) == 0
-        set(hProb, 'YData', abs(psi).^2);
-        set(hRe,   'YData', real(psi));
-        set(hIm,   'YData', imag(psi));
+    % 3) update imag part using new real part
+    lapR = secondDerivative(psiR, dx);
+    psiI = psiI + dt*( (alpha/hbar)*lapR - (V/hbar).*psiR );
+
+    % 4) absorber damping for imag part
+    psiI = psiI .* exp(-eta*dt);
+
+    % 5) boundary conditions
+    psiR([1 end]) = 0;
+    psiI([1 end]) = 0;
+
+    if mod(n, plotEvery) == 0
+        prob = psiR.^2 + psiI.^2;
+        set(hProb, 'YData', prob);
+        set(hRe,   'YData', psiR);
+        set(hIm,   'YData', psiI);
         subplot(2,1,1);
-        title(sprintf('TDSE in a quantum dot (t = %.2f fs)', n*dt*1e15));
+        title(sprintf('1D TDSE FDTD (t = %.2f fs, dt = %.3g fs)', n*dt*1e15, dt*1e15));
         drawnow;
     end
 end
 
 %% Diagnostics
-probability = trapz(x, abs(psi).^2);
-E_kin = real(trapz(x, conj(psi) .* (-(hbar^2/(2*m_eff)) * secondDerivative(psi, dx))));
-E_pot = real(trapz(x, conj(psi) .* (V .* psi)));
-E_tot = E_kin + E_pot;
+psi = psiR + 1i*psiI;
+normInt = trapz(x, abs(psi).^2);
+Ekin = real(trapz(x, conj(psi).*(-(hbar^2/(2*mEff))*secondDerivative(psi, dx))));
+Epot = real(trapz(x, conj(psi).*(V.*psi)));
+Etot = Ekin + Epot;
 
-fprintf('Final normalization integral: %.8f\n', probability);
-fprintf('Final total energy: %.6e J (%.6f eV)\n', E_tot, E_tot/q);
+fprintf('dx = %.3e m, dt = %.3e s (stability ref %.3e s)\n', dx, dt, dtStability);
+fprintf('Final normalization integral = %.8f\n', normInt);
+fprintf('Final total energy = %.6e J (%.6f eV)\n', Etot, Etot/q);
 
-%% Local function
-function d2psi = secondDerivative(psi, dx)
-    d2psi = zeros(size(psi));
-    d2psi(2:end-1) = (psi(3:end) - 2*psi(2:end-1) + psi(1:end-2)) / dx^2;
-    d2psi(1) = 0;
-    d2psi(end) = 0;
+%% Local helpers
+function d2f = secondDerivative(f, dx)
+    d2f = zeros(size(f));
+    d2f(2:end-1) = (f(3:end) - 2*f(2:end-1) + f(1:end-2))/dx^2;
+    d2f(1) = 0;
+    d2f(end) = 0;
+end
+
+function eta = absorbingProfile(x, L, absWidth, etaMax)
+    eta = zeros(size(x));
+    xL = -L/2;
+    xR =  L/2;
+
+    leftIdx  = x < (xL + absWidth);
+    rightIdx = x > (xR - absWidth);
+
+    sL = ((x(leftIdx) - (xL + absWidth))/absWidth);
+    sR = ((x(rightIdx) - (xR - absWidth))/absWidth);
+
+    % Polynomial CAP profile
+    eta(leftIdx)  = etaMax*(sL.^2);
+    eta(rightIdx) = etaMax*(sR.^2);
 end

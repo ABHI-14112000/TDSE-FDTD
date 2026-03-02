@@ -1,34 +1,35 @@
 # TDSE-FDTD (MATLAB)
 
-This repository contains a MATLAB example for solving the **time-dependent Schrödinger equation (TDSE)** for a **1D quantum dot** using a finite-difference grid (FDTD-style discretization in space) with **Crank-Nicolson** time integration.
+MATLAB example for solving the **1D time-dependent Schrödinger equation (TDSE)** for a **quantum dot** using an **explicit FDTD leapfrog method**.
 
 ## File
 
-- `tdse_quantum_dot_fdtd.m`: complete simulation script.
+- `tdse_quantum_dot_fdtd.m` — self-contained script.
 
-## What it models
+## Model
 
-- Electron in an effective-mass approximation.
-- 1D finite potential well (quantum dot) in a finite simulation box.
-- Initial Gaussian wave packet inside the dot.
-- Time evolution with stable implicit update.
+- Effective-mass electron in 1D.
+- Finite square-well quantum dot inside a barrier.
+- Real/imaginary split of wavefunction with staggered-time FDTD update.
+- Optional absorbing boundary layer (CAP-like damping) to reduce edge reflections.
 
 ## Run
 
-Open MATLAB and run:
+In MATLAB:
 
 ```matlab
 tdse_quantum_dot_fdtd
 ```
 
-The script will:
+## Key parameters to tune
 
-1. Build the Hamiltonian matrix from second-order finite differences.
-2. Evolve the wavefunction in time.
-3. Plot probability density and wavefunction components.
-4. Print final normalization and total energy.
+- Spatial grid: `Nx`, `L`
+- Time stepping: `safety`, `Nt`
+- Dot potential: `wellWidth`, `V0eV`
+- Initial packet: `x0`, `sigma`, `k0`
+- Absorber: `absWidth`, `etaMax`
 
 ## Notes
 
-- You can change `wellWidth`, `V0_eV`, `dt`, `Nx`, and `Nt` to study accuracy and physical behavior.
-- For stronger confinement or sharper features, increase `Nx` and reduce `dt`.
+- The script computes and prints a stability reference time step (`dtStability`) and uses `dt = safety*dtStability`.
+- If you see numerical noise, reduce `safety` or increase `Nx` with a correspondingly smaller `dt`.
